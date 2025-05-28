@@ -18,13 +18,13 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.units import inch
 
-# Включаем логирование
+# Логирование
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# Проверяем наличие папки photos
+# Создаем папку photos, если её нет
 if not os.path.exists("photos"):
     os.makedirs("photos")
 
@@ -84,7 +84,7 @@ LEGAL_ENTITIES = {
 
 user_data = {}
 
-# ---- ФУНКЦИИ ----
+# ---- ОСНОВНЫЕ ФУНКЦИИ ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(name, callback_data=uid)] for uid, name in USERS.items()]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -129,7 +129,7 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['date'] = text
         if 'violations' not in user_data:
             user_data['violations'] = []
-        await update.message.reply_text("Опишите нарушение. Если есть фото — отправьте его.")
+        await update.message.reply_text("Опишите нарушение. Если фото есть — отправьте его.")
         return ADDING_VIOLATION
     except ValueError:
         await update.message.reply_text("Неверный формат даты. Попробуйте снова (ДД.ММ.ГГГГ).")
@@ -146,30 +146,26 @@ async def handle_violation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нарушение добавлено. Отправьте фото или напишите /done.")
         return ADDING_VIOLATION
 
-    photo = update.message.photo[-1]
+    photo = update.message.photo[-1]  # самое большое фото
     caption = update.message.caption or ""
-    file_id = photo.file_id
-
-    # Скачиваем фото
-    try:
-        photo_file = await context.bot.get_file(file_id)
-        photo_path = os.path.join("photos", f"{file_id}.jpg")
-        await photo_file.download_to_drive(photo_path)
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка при скачивании фото: {e}")
-        return ADDING_VIOLATION
 
     if not user_data['violations']:
         user_data['violations'].append({
             "description": "Нарушение без текста",
-            "photo": file_id,
+            "photo": photo.file_id,
             "caption": caption
         })
     else:
-        user_data['violations'][-1]["photo"] = file_id
+        user_data['violations'][-1]["photo"] = photo.file_id
         user_data['violations'][-1]["caption"] = caption
 
-    await update.message.reply_text("Фото добавлено. Продолжайте описывать нарушения или напишите /done.")
+    # Скачиваем фото локально
+    file_id = photo.file_id
+    photo_path = os.path.join("photos", f"{file_id}.jpg")
+    photo_file = await context.bot.get_file(file_id)
+    await photo_file.download_to_drive(photo_path)
+
+    await update.message.reply_text("Фото добавлено. Продолжайте или напишите /done.")
     return ADDING_VIOLATION
 
 
@@ -179,7 +175,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Вы не добавили ни одного нарушения.")
         return ADDING_VIOLATION
 
-    # Текст отчета
+    # Сообщение об отчете
     report_text = (
         f"📋 Отчет по проверке:\n"
         f"Пользователь: {USERS[user_data['user']]}\n"
@@ -199,10 +195,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Генерация PDF
     pdf_path = create_pdf_report(user_data)
-    if pdf_path:
-        await update.message.reply_document(document=open(pdf_path, 'rb'))
-    else:
-        await update.message.reply_text("Не удалось создать PDF.")
+    await update.message.reply_document(document=open(pdf_path, 'rb'))
 
     # Очистка данных
     user_data.clear()
@@ -212,14 +205,14 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data.clear()
-    await update.message.reply_text("Процесс отменен. Чтобы начать заново — напишите /start.")
+    await update.message.reply_text("Процесс отменён. Чтобы начать заново — напишите /start.")
     return ConversationHandler.END
 
 
 # ---- ГЕНЕРАЦИЯ PDF ----
 def create_pdf_report(data):
     font_path = os.path.join("fonts", "DejaVuSans.ttf")
-    
+
     if not os.path.exists(font_path):
         print(f"[ERROR] Шрифт не найден: {font_path}")
         return None
@@ -259,15 +252,15 @@ def create_pdf_report(data):
     <b>Пользователь:</b> {USERS[data['user']]}</br>
     <b>Юридическое лицо:</b> {data['entity']}</br>
     <b>Судно:</b> {data['ship']}</br>
-    <b>Дата проверки:</b> {data['date']}</br>
+    <b>Дата:</b> {data['date']}</br>
     <b>Количество нарушений:</b> {len(data['violations'])}</br>
     """
-    story.append(Paragraph(text, style_normal))
+    story.append(Paragraph(text.replace("</br>", "<br>"), style_normal))
     story.append(Spacer(1, 12))
 
     # Нарушения
     for i, v in enumerate(data['violations']):
-        desc = f"<b>{i+1}.</b> {v['description']}"
+        desc = f"<b>{i + 1}.</b> {v['description']}"
         story.append(Paragraph(desc, style_normal))
         story.append(Spacer(1, 8))
 
@@ -279,16 +272,16 @@ def create_pdf_report(data):
                     story.append(Paragraph(f"<i>Подпись: {v['caption']}</i>", style_normal))
                 story.append(Spacer(1, 12))
 
-    # Сохранение PDF
+    # Сохраняем PDF
     try:
         doc.build(story)
         return filename
     except Exception as e:
-        print(f"[ERROR] Ошибка генерации PDF: {e}")
+        print(f"[ERROR] Ошибка при создании PDF: {e}")
         return None
 
 
-# ---- ОСНОВНОЙ ЦИКЛ ----
+# ---- ЗАПУСК БОТА ----
 def main():
     application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
