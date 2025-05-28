@@ -1,6 +1,7 @@
 import os
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -10,10 +11,12 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler
 )
-print("Проверяем наличие шрифта:", os.path.exists("fonts/DejaVuSans.ttf"))
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
-from reportlab.lib.styles import getSampleStyleSheet
-import os
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.units import inch
 
 # Включаем логирование
 logging.basicConfig(
@@ -21,7 +24,11 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Данные
+# Проверяем наличие папки photos
+if not os.path.exists("photos"):
+    os.makedirs("photos")
+
+# ---- ДАННЫЕ ----
 USERS = {
     "moiseenko": "Моисеенко А.С.",
     "zorin": "Зорин Я.Д.",
@@ -68,17 +75,16 @@ LEGAL_ENTITIES = {
     }
 }
 
-# Состояния
+# ---- СОСТОЯНИЯ ----
 (SELECTING_USER,
  SELECTING_ENTITY,
  SELECTING_SHIP,
  ENTERING_DATE,
  ADDING_VIOLATION) = range(5)
 
-user_data = {}  # Хранилище данных для текущего пользователя
+user_data = {}
 
-
-# --- Обработчики ---
+# ---- ФУНКЦИИ ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(name, callback_data=uid)] for uid, name in USERS.items()]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -119,12 +125,11 @@ async def enter_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     try:
-        from datetime import datetime
         datetime.strptime(text, "%d.%m.%Y")
         user_data['date'] = text
         if 'violations' not in user_data:
             user_data['violations'] = []
-        await update.message.reply_text("Опишите нарушение. Если фото есть — отправьте его.")
+        await update.message.reply_text("Опишите нарушение. Если есть фото — отправьте его.")
         return ADDING_VIOLATION
     except ValueError:
         await update.message.reply_text("Неверный формат даты. Попробуйте снова (ДД.ММ.ГГГГ).")
@@ -137,14 +142,33 @@ async def handle_violation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await generate_report(update, context)
 
     if text:
-        user_data['violations'].append({"description": text, "photo": None})
+        user_data['violations'].append({"description": text, "photo": None, "caption": ""})
         await update.message.reply_text("Нарушение добавлено. Отправьте фото или напишите /done.")
         return ADDING_VIOLATION
 
-    photo = update.message.photo[-1]  # самое большое фото
+    photo = update.message.photo[-1]
     caption = update.message.caption or ""
-    user_data['violations'][-1]["photo"] = photo.file_id
-    user_data['violations'][-1]["caption"] = caption
+    file_id = photo.file_id
+
+    # Скачиваем фото
+    try:
+        photo_file = await context.bot.get_file(file_id)
+        photo_path = os.path.join("photos", f"{file_id}.jpg")
+        await photo_file.download_to_drive(photo_path)
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при скачивании фото: {e}")
+        return ADDING_VIOLATION
+
+    if not user_data['violations']:
+        user_data['violations'].append({
+            "description": "Нарушение без текста",
+            "photo": file_id,
+            "caption": caption
+        })
+    else:
+        user_data['violations'][-1]["photo"] = file_id
+        user_data['violations'][-1]["caption"] = caption
+
     await update.message.reply_text("Фото добавлено. Продолжайте описывать нарушения или напишите /done.")
     return ADDING_VIOLATION
 
@@ -167,15 +191,18 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(report_text)
 
-    for i, violation in enumerate(violations):
-        desc = f"{i + 1}. {violation['description']}"
+    for i, v in enumerate(violations):
+        desc = f"{i + 1}. {v['description']}"
         await update.message.reply_text(desc)
-        if violation['photo']:
-            await update.message.reply_photo(photo=violation['photo'], caption=violation['caption'])
+        if v.get('photo'):
+            await update.message.reply_photo(photo=v['photo'], caption=v['caption'])
 
     # Генерация PDF
     pdf_path = create_pdf_report(user_data)
-    await update.message.reply_document(document=open(pdf_path, 'rb'))
+    if pdf_path:
+        await update.message.reply_document(document=open(pdf_path, 'rb'))
+    else:
+        await update.message.reply_text("Не удалось создать PDF.")
 
     # Очистка данных
     user_data.clear()
@@ -189,40 +216,79 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# ---- ГЕНЕРАЦИЯ PDF ----
 def create_pdf_report(data):
+    font_path = os.path.join("fonts", "DejaVuSans.ttf")
+    
+    if not os.path.exists(font_path):
+        print(f"[ERROR] Шрифт не найден: {font_path}")
+        return None
+
+    try:
+        pdfmetrics.registerFont(TTFont('DejaVu', font_path))
+    except Exception as e:
+        print(f"[ERROR] Не удалось зарегистрировать шрифт: {e}")
+        return None
+
+    style_normal = ParagraphStyle(
+        'normal',
+        fontName='DejaVu',
+        fontSize=12,
+        leading=14,
+        alignment=TA_LEFT
+    )
+
+    style_title = ParagraphStyle(
+        'title',
+        fontName='DejaVu',
+        fontSize=16,
+        leading=20,
+        alignment=TA_LEFT
+    )
+
     filename = f"report_{data['date'].replace('.', '_')}.pdf"
     doc = SimpleDocTemplate(filename)
-    styles = getSampleStyleSheet()
     story = []
 
-    title = Paragraph("📋 Отчет по проверке охраны труда", styles['Title'])
-    story.append(title)
+    # Заголовок
+    story.append(Paragraph("📋 Отчет по проверке охраны труда", style_title))
     story.append(Spacer(1, 24))
 
+    # Информация
     text = f"""
-    <b>Пользователь:</b> {USERS[data['user']]}<br/>
-    <b>Юридическое лицо:</b> {data['entity']}<br/>
-    <b>Судно:</b> {data['ship']}<br/>
-    <b>Дата проверки:</b> {data['date']}<br/>
-    <b>Количество нарушений:</b> {len(data['violations'])}<br/>
+    <b>Пользователь:</b> {USERS[data['user']]}</br>
+    <b>Юридическое лицо:</b> {data['entity']}</br>
+    <b>Судно:</b> {data['ship']}</br>
+    <b>Дата проверки:</b> {data['date']}</br>
+    <b>Количество нарушений:</b> {len(data['violations'])}</br>
     """
-    story.append(Paragraph(text, styles['Normal']))
+    story.append(Paragraph(text, style_normal))
     story.append(Spacer(1, 12))
 
+    # Нарушения
     for i, v in enumerate(data['violations']):
-        story.append(Paragraph(f"<b>{i+1}.</b> {v['description']}", styles['Normal']))
-        if v['photo']:
-            story.append(Spacer(1, 12))
-            # Для сохранения картинок нужно их загрузить (это пример)
-            # Здесь можно использовать file.download_as_bytearray(), если нужно полное сохранение
-            # Для упрощения просто указываем, что они приложены к PDF
+        desc = f"<b>{i+1}.</b> {v['description']}"
+        story.append(Paragraph(desc, style_normal))
+        story.append(Spacer(1, 8))
 
-    doc.build(story)
-    return filename
+        if v.get('photo'):
+            photo_path = os.path.join("photos", f"{v['photo']}.jpg")
+            if os.path.exists(photo_path):
+                story.append(RLImage(photo_path, width=4 * inch, height=3 * inch))
+                if v.get('caption'):
+                    story.append(Paragraph(f"<i>Подпись: {v['caption']}</i>", style_normal))
+                story.append(Spacer(1, 12))
+
+    # Сохранение PDF
+    try:
+        doc.build(story)
+        return filename
+    except Exception as e:
+        print(f"[ERROR] Ошибка генерации PDF: {e}")
+        return None
 
 
-# --- Конец функций ---
-
+# ---- ОСНОВНОЙ ЦИКЛ ----
 def main():
     application = ApplicationBuilder().token("8045118401:AAGrrj1LTm-UzUuwNqFIY1L-BSYCz53usUs").build()
 
