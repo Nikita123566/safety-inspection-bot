@@ -9,6 +9,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler
 )
+print("Проверяем наличие шрифта:", os.path.exists("fonts/DejaVuSans.ttf"))
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet
 import os
