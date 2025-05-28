@@ -255,7 +255,7 @@ def create_pdf_report(data):
     <b>Дата:</b> {data['date']}</br>
     <b>Количество нарушений:</b> {len(data['violations'])}</br>
     """
-    story.append(Paragraph(text.replace("</br>", "<br>"), style_normal))
+    story.append(Paragraph(text.replace("</br>", "<br/>"), style_normal))
     story.append(Spacer(1, 12))
 
     # Нарушения
