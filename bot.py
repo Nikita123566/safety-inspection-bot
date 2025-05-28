@@ -290,7 +290,7 @@ def create_pdf_report(data):
 
 # ---- ОСНОВНОЙ ЦИКЛ ----
 def main():
-    application = ApplicationBuilder().token("BOT_TOKEN").build()
+    application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
