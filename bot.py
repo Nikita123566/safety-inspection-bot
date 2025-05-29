@@ -147,7 +147,7 @@ def cancel(update: Update, context: CallbackContext) -> int:
 
 def main() -> None:
     # Токен бота (замените на ваш)
-    TOKEN = "ВАШ_TELEGRAM_BOT_TOKEN"
+    TOKEN = "BOT_TOKEN"
     
     updater = Updater(TOKEN)
     dispatcher = updater.dispatcher
