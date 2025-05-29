@@ -1,310 +1,180 @@
-import os
 import logging
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
+    Updater,
     CommandHandler,
+    CallbackContext,
     CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    ConversationHandler
+    ConversationHandler,
 )
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.enums import TA_LEFT
-from reportlab.lib.units import inch
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-# Создаем папку photos, если её нет
-if not os.path.exists("photos"):
-    os.makedirs("photos")
+# Стадии разговора
+SECTION, QUIZ, COMPLETION = range(3)
 
-# ---- ДАННЫЕ ----
-USERS = {
-    "moiseenko": "Моисеенко А.С.",
-    "zorin": "Зорин Я.Д.",
-    "chernov": "Чернов Н.В.",
-    "zuev": "Зуев Р.И."
-}
-
-LEGAL_ENTITIES = {
-    "turnif": {
-        "name": "АО Турниф",
-        "ships": ["БМРТ Капитан Олейничук", "БМРТ Владивосток"]
+# Данные инструктажа
+sections = [
+    {
+        "title": "🛳 Общие положения",
+        "content": "1.1. Работа на БМРТ связана с повышенной опасностью\n"
+                   "1.2. Обязательное использование СИЗ: спасательные жилеты, нескользящая обувь, защитные очки\n"
+                   "1.3. Запрещено находиться на палубе без производственной необходимости во время шторма\n\n"
+                   "<b>Суда класса БМРТ:</b>\n"
+                   "- 'Капитан Смирнов'\n- 'Океан'\n- 'Моряна'\n(и еще 8 судов)",
     },
-    "vostokryb": {
-        "name": "ООО Востокрыбпром",
-        "ships": ["БМРТ Владимир Лиманов", "БМРТ Иван Калинин"]
+    {
+        "title": "⚠️ Опасные факторы",
+        "content": "2.1. Скользкие палубы\n2.2. Морские волны\n2.3. Рыболовное оборудование\n"
+                   "2.4. Низкие температуры\n2.5. Ограниченная видимость\n\n"
+                   "<b>Требования:</b>\n- Всегда держаться за поручни\n- Работать только в спасательных жилетах\n- Не подходить к работающим механизмам"
     },
-    "intraros": {
-        "name": "АО Интрарос",
-        "ships": ["БМРТ Березина"]
-    },
-    "dmp": {
-        "name": "АО ДМП РМ",
-        "ships": ["БМРТ Павел Батов"]
-    },
-    "rmd": {
-        "name": "ООО РМД ЮВА",
-        "ships": ["БМРТ Мыс Басаргина"]
-    },
-    "mintay": {
-        "name": "ООО Минтай Первый",
-        "ships": ["БМРТ Капитан Вдовиченко"]
-    },
-    "novostroy": {
-        "name": "ООО Новострой",
-        "ships": ["БМРТ Механик Маслак"]
-    },
-    "rrpk": {
-        "name": "ООО РРПК-Восток",
-        "ships": ["БМРТ Механик Сизов"]
-    },
-    "seyval": {
-        "name": "ООО Новый Сейвал",
-        "ships": ["БМРТ Капитан Мартынов"]
+    {
+        "title": "🚨 Аварийные ситуации",
+        "content": "3.1. Человек за бортом: немедленно бросить спасательный круг, сообщить капитану\n"
+                   "3.2. Пожар: использовать ближайший огнетушитель, следовать к местам сбора\n"
+                   "3.3. Разгерметизация: надеть гидрокостюмы, следовать указаниям команды\n\n"
+                   "<b>Важно:</b> Все члены экипажа должны знать расположение аварийных выходов и спассредств"
     }
-}
+]
 
-# ---- СОСТОЯНИЯ ----
-(SELECTING_USER,
- SELECTING_ENTITY,
- SELECTING_SHIP,
- ENTERING_DATE,
- ADDING_VIOLATION) = range(5)
+quizzes = [
+    {
+        "question": "Обязательно ли использовать спасательный жилет при выходе на палубу во время шторма?",
+        "options": ["Только ночью", "Да, всегда", "Только новичкам"],
+        "correct": 1
+    },
+    {
+        "question": "Что делать при обнаружении человека за бортом?",
+        "options": [
+            "Продолжать работу", 
+            "Немедленно бросить спасательный круг и сообщить капитану", 
+            "Прыгнуть за борт для спасения"
+        ],
+        "correct": 1
+    }
+]
 
-user_data = {}
+# Обработчики команд
+def start(update: Update, context: CallbackContext) -> int:
+    user = update.effective_user
+    update.message.reply_html(
+        f"Привет, {user.first_name}!\n\n"
+        "Добро пожаловать на вводный инструктаж по охране труда для экипажей БМРТ.\n\n"
+        "<b>Пройдите 3 раздела инструктажа:</b>\n"
+        "1. Общие положения\n"
+        "2. Опасные факторы\n"
+        "3. Действия в аварийных ситуациях\n\n"
+        "Нажмите /begin чтобы начать инструктаж"
+    )
+    return ConversationHandler.END
 
-# ---- ОСНОВНЫЕ ФУНКЦИИ ----
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(name, callback_data=uid)] for uid, name in USERS.items()]
+def begin(update: Update, context: CallbackContext) -> int:
+    context.user_data['current_section'] = 0
+    return show_section(update, context)
+
+def show_section(update: Update, context: CallbackContext) -> int:
+    section_index = context.user_data['current_section']
+    section = sections[section_index]
+    
+    keyboard = [
+        [InlineKeyboardButton("Следующий раздел →", callback_data='next')],
+        [InlineKeyboardButton("Начать тестирование", callback_data='quiz')]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите пользователя:", reply_markup=reply_markup)
-    return SELECTING_USER
+    
+    update.callback_query.edit_message_text(
+        text=f"<b>{section['title']}</b>\n\n{section['content']}",
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+    return SECTION
 
+def start_quiz(update: Update, context: CallbackContext) -> int:
+    context.user_data['current_question'] = 0
+    context.user_data['score'] = 0
+    return show_question(update, context)
 
-async def select_entity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_data['user'] = query.data
-    keyboard = [[InlineKeyboardButton(entity["name"], callback_data=key)] for key, entity in LEGAL_ENTITIES.items()]
+def show_question(update: Update, context: CallbackContext) -> int:
+    question_index = context.user_data['current_question']
+    question = quizzes[question_index]
+    
+    keyboard = []
+    for i, option in enumerate(question['options']):
+        keyboard.append([InlineKeyboardButton(option, callback_data=str(i))])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text="Выберите юридическое лицо:", reply_markup=reply_markup)
-    return SELECTING_ENTITY
+    
+    update.callback_query.edit_message_text(
+        text=f"❓ Вопрос {question_index+1}/{len(quizzes)}\n\n{question['question']}",
+        reply_markup=reply_markup
+    )
+    return QUIZ
 
-
-async def select_ship(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_answer(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    await query.answer()
-    entity_key = query.data
-    entity = LEGAL_ENTITIES[entity_key]
-    user_data['entity'] = entity["name"]
-    keyboard = [[InlineKeyboardButton(ship, callback_data=ship)] for ship in entity["ships"]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text="Выберите судно:", reply_markup=reply_markup)
-    return SELECTING_SHIP
-
-
-async def enter_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_data['ship'] = query.data
-    await query.edit_message_text("Введите дату проверки (в формате ДД.ММ.ГГГГ):")
-    return ENTERING_DATE
-
-
-async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    try:
-        datetime.strptime(text, "%d.%m.%Y")
-        user_data['date'] = text
-        if 'violations' not in user_data:
-            user_data['violations'] = []
-        await update.message.reply_text("Опишите нарушение. Если фото есть — отправьте его.")
-        return ADDING_VIOLATION
-    except ValueError:
-        await update.message.reply_text("Неверный формат даты. Попробуйте снова (ДД.ММ.ГГГГ).")
-        return ENTERING_DATE
-
-
-async def handle_violation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text and text.lower() == "/done":
-        return await generate_report(update, context)
-
-    if text:
-        user_data['violations'].append({"description": text, "photo": None, "caption": ""})
-        await update.message.reply_text("Нарушение добавлено. Отправьте фото или напишите /done.")
-        return ADDING_VIOLATION
-
-    photo = update.message.photo[-1]  # самое большое фото
-    caption = update.message.caption or ""
-
-    if not user_data['violations']:
-        user_data['violations'].append({
-            "description": "Нарушение без текста",
-            "photo": photo.file_id,
-            "caption": caption
-        })
+    question_index = context.user_data['current_question']
+    selected_option = int(query.data)
+    
+    if selected_option == quizzes[question_index]['correct']:
+        context.user_data['score'] += 1
+        feedback = "✅ Верно!"
     else:
-        user_data['violations'][-1]["photo"] = photo.file_id
-        user_data['violations'][-1]["caption"] = caption
+        feedback = "❌ Неверно!"
+    
+    # Следующий вопрос или завершение
+    context.user_data['current_question'] += 1
+    
+    if context.user_data['current_question'] < len(quizzes):
+        query.edit_message_text(text=f"{feedback} Переходим к следующему вопросу...")
+        return show_question(update, context)
+    else:
+        score = context.user_data['score']
+        total = len(quizzes)
+        query.edit_message_text(
+            text=f"📝 Тест завершен!\n\nВаш результат: {score}/{total}\n\n"
+            "Инструктаж успешно пройден! Ваши данные внесены в журнал учета."
+        )
+        return COMPLETION
 
-    # Скачиваем фото локально
-    file_id = photo.file_id
-    photo_path = os.path.join("photos", f"{file_id}.jpg")
-    photo_file = await context.bot.get_file(file_id)
-    await photo_file.download_to_drive(photo_path)
-
-    await update.message.reply_text("Фото добавлено. Продолжайте или напишите /done.")
-    return ADDING_VIOLATION
-
-
-async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    violations = user_data.get('violations', [])
-    if not violations:
-        await update.message.reply_text("Вы не добавили ни одного нарушения.")
-        return ADDING_VIOLATION
-
-    # Сообщение об отчете
-    report_text = (
-        f"📋 Отчет по проверке:\n"
-        f"Пользователь: {USERS[user_data['user']]}\n"
-        f"Юрлицо: {user_data['entity']}\n"
-        f"Судно: {user_data['ship']}\n"
-        f"Дата: {user_data['date']}\n"
-        f"Количество нарушений: {len(violations)}\n\n"
-        f"🔍 Описания нарушений:"
-    )
-    await update.message.reply_text(report_text)
-
-    for i, v in enumerate(violations):
-        desc = f"{i + 1}. {v['description']}"
-        await update.message.reply_text(desc)
-        if v.get('photo'):
-            await update.message.reply_photo(photo=v['photo'], caption=v['caption'])
-
-    # Генерация PDF
-    pdf_path = create_pdf_report(user_data)
-    await update.message.reply_document(document=open(pdf_path, 'rb'))
-
-    # Очистка данных
-    user_data.clear()
-    await update.message.reply_text("Проверка завершена. Чтобы начать новую — напишите /start.")
+def cancel(update: Update, context: CallbackContext) -> int:
+    update.message.reply_text('Инструктаж прерван')
     return ConversationHandler.END
 
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data.clear()
-    await update.message.reply_text("Процесс отменён. Чтобы начать заново — напишите /start.")
-    return ConversationHandler.END
-
-
-# ---- ГЕНЕРАЦИЯ PDF ----
-def create_pdf_report(data):
-    font_path = os.path.join("fonts", "DejaVuSans.ttf")
-
-    if not os.path.exists(font_path):
-        print(f"[ERROR] Шрифт не найден: {font_path}")
-        return None
-
-    try:
-        pdfmetrics.registerFont(TTFont('DejaVu', font_path))
-    except Exception as e:
-        print(f"[ERROR] Не удалось зарегистрировать шрифт: {e}")
-        return None
-
-    style_normal = ParagraphStyle(
-        'normal',
-        fontName='DejaVu',
-        fontSize=12,
-        leading=14,
-        alignment=TA_LEFT
-    )
-
-    style_title = ParagraphStyle(
-        'title',
-        fontName='DejaVu',
-        fontSize=16,
-        leading=20,
-        alignment=TA_LEFT
-    )
-
-    filename = f"report_{data['date'].replace('.', '_')}.pdf"
-    doc = SimpleDocTemplate(filename)
-    story = []
-
-    # Заголовок
-    story.append(Paragraph("📋 Отчет по проверке охраны труда", style_title))
-    story.append(Spacer(1, 24))
-
-    # Информация
-    text = f"""
-    <b>Пользователь:</b> {USERS[data['user']]}</br>
-    <b>Юридическое лицо:</b> {data['entity']}</br>
-    <b>Судно:</b> {data['ship']}</br>
-    <b>Дата:</b> {data['date']}</br>
-    <b>Количество нарушений:</b> {len(data['violations'])}</br>
-    """
-    story.append(Paragraph(text.replace("</br>", "<br/>"), style_normal))
-    story.append(Spacer(1, 12))
-
-    # Нарушения
-    for i, v in enumerate(data['violations']):
-        desc = f"<b>{i + 1}.</b> {v['description']}"
-        story.append(Paragraph(desc, style_normal))
-        story.append(Spacer(1, 8))
-
-        if v.get('photo'):
-            photo_path = os.path.join("photos", f"{v['photo']}.jpg")
-            if os.path.exists(photo_path):
-                story.append(RLImage(photo_path, width=4 * inch, height=3 * inch))
-                if v.get('caption'):
-                    story.append(Paragraph(f"<i>Подпись: {v['caption']}</i>", style_normal))
-                story.append(Spacer(1, 12))
-
-    # Сохраняем PDF
-    try:
-        doc.build(story)
-        return filename
-    except Exception as e:
-        print(f"[ERROR] Ошибка при создании PDF: {e}")
-        return None
-
-
-# ---- ЗАПУСК БОТА ----
-def main():
-    application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+def main() -> None:
+    # Токен бота (замените на ваш)
+    TOKEN = "ВАШ_TELEGRAM_BOT_TOKEN"
+    
+    updater = Updater(TOKEN)
+    dispatcher = updater.dispatcher
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[CommandHandler('begin', begin)],
         states={
-            SELECTING_USER: [CallbackQueryHandler(select_entity)],
-            SELECTING_ENTITY: [CallbackQueryHandler(select_ship)],
-            SELECTING_SHIP: [CallbackQueryHandler(enter_date)],
-            ENTERING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_date)],
-            ADDING_VIOLATION: [
-                MessageHandler(filters.PHOTO, handle_violation),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_violation),
-                CommandHandler('done', generate_report),
+            SECTION: [
+                CallbackQueryHandler(show_section, pattern='^back$'),
+                CallbackQueryHandler(start_quiz, pattern='^quiz$'),
+                CallbackQueryHandler(show_section, pattern='^next$'),
+            ],
+            QUIZ: [
+                CallbackQueryHandler(handle_answer)
+            ],
+            COMPLETION: [
+                CallbackQueryHandler(start, pattern='^done$')
             ],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    application.add_handler(conv_handler)
-    print("Бот запущен...")
-    application.run_polling()
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(conv_handler)
 
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main()
