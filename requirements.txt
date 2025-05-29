@@ -1,2 +1,1 @@
-python-telegram-bot==20.0
-reportlab==3.6.12
+pip install python-telegram-bot
