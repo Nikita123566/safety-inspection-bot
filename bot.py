@@ -1,3 +1,4 @@
+import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -7,10 +8,15 @@ from telegram.ext import (
     CallbackQueryHandler,
     ConversationHandler,
 )
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
 
 # Настройка логирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -156,8 +162,15 @@ async def cancel(update: Update, context: CallbackContext) -> int:
     return ConversationHandler.END
 
 def main() -> None:
-    # Токен бота (замените на ваш)
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    # Получаем токен из переменных окружения
+    TOKEN = os.getenv('BOT_TOKEN')
+    
+    if not TOKEN:
+        logger.error("Не задан _BOT_TOKEN в переменных окружения")
+        return
+    
+    # Создаем Application
+    application = Application.builder().token(TOKEN).build()
     
     # Создаем Application вместо Updater
     application = Application.builder().token(TOKEN).build()
