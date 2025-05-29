@@ -1,7 +1,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Updater,
+    Application,
     CommandHandler,
     CallbackContext,
     CallbackQueryHandler,
@@ -60,9 +60,9 @@ quizzes = [
 ]
 
 # Обработчики команд
-def start(update: Update, context: CallbackContext) -> int:
+async def start(update: Update, context: CallbackContext) -> int:
     user = update.effective_user
-    update.message.reply_html(
+    await update.message.reply_html(
         f"Привет, {user.first_name}!\n\n"
         "Добро пожаловать на вводный инструктаж по охране труда для экипажей БМРТ.\n\n"
         "<b>Пройдите 3 раздела инструктажа:</b>\n"
@@ -73,11 +73,11 @@ def start(update: Update, context: CallbackContext) -> int:
     )
     return ConversationHandler.END
 
-def begin(update: Update, context: CallbackContext) -> int:
+async def begin(update: Update, context: CallbackContext) -> int:
     context.user_data['current_section'] = 0
-    return show_section(update, context)
+    return await show_section(update, context)
 
-def show_section(update: Update, context: CallbackContext) -> int:
+async def show_section(update: Update, context: CallbackContext) -> int:
     section_index = context.user_data['current_section']
     section = sections[section_index]
     
@@ -87,19 +87,27 @@ def show_section(update: Update, context: CallbackContext) -> int:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    update.callback_query.edit_message_text(
-        text=f"<b>{section['title']}</b>\n\n{section['content']}",
-        reply_markup=reply_markup,
-        parse_mode='HTML'
-    )
+    query = update.callback_query
+    if query:
+        await query.edit_message_text(
+            text=f"<b>{section['title']}</b>\n\n{section['content']}",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    else:
+        await update.message.reply_text(
+            text=f"<b>{section['title']}</b>\n\n{section['content']}",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
     return SECTION
 
-def start_quiz(update: Update, context: CallbackContext) -> int:
+async def start_quiz(update: Update, context: CallbackContext) -> int:
     context.user_data['current_question'] = 0
     context.user_data['score'] = 0
-    return show_question(update, context)
+    return await show_question(update, context)
 
-def show_question(update: Update, context: CallbackContext) -> int:
+async def show_question(update: Update, context: CallbackContext) -> int:
     question_index = context.user_data['current_question']
     question = quizzes[question_index]
     
@@ -109,14 +117,16 @@ def show_question(update: Update, context: CallbackContext) -> int:
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    update.callback_query.edit_message_text(
+    query = update.callback_query
+    await query.edit_message_text(
         text=f"❓ Вопрос {question_index+1}/{len(quizzes)}\n\n{question['question']}",
         reply_markup=reply_markup
     )
     return QUIZ
 
-def handle_answer(update: Update, context: CallbackContext) -> int:
+async def handle_answer(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
+    await query.answer()
     question_index = context.user_data['current_question']
     selected_option = int(query.data)
     
@@ -130,27 +140,27 @@ def handle_answer(update: Update, context: CallbackContext) -> int:
     context.user_data['current_question'] += 1
     
     if context.user_data['current_question'] < len(quizzes):
-        query.edit_message_text(text=f"{feedback} Переходим к следующему вопросу...")
-        return show_question(update, context)
+        await query.edit_message_text(text=f"{feedback} Переходим к следующему вопросу...")
+        return await show_question(update, context)
     else:
         score = context.user_data['score']
         total = len(quizzes)
-        query.edit_message_text(
+        await query.edit_message_text(
             text=f"📝 Тест завершен!\n\nВаш результат: {score}/{total}\n\n"
             "Инструктаж успешно пройден! Ваши данные внесены в журнал учета."
         )
         return COMPLETION
 
-def cancel(update: Update, context: CallbackContext) -> int:
-    update.message.reply_text('Инструктаж прерван')
+async def cancel(update: Update, context: CallbackContext) -> int:
+    await update.message.reply_text('Инструктаж прерван')
     return ConversationHandler.END
 
 def main() -> None:
     # Токен бота (замените на ваш)
-    TOKEN = "BOT_TOKEN"
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
     
-    updater = Updater(TOKEN)
-    dispatcher = updater.dispatcher
+    # Создаем Application вместо Updater
+    application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('begin', begin)],
@@ -170,11 +180,10 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(conv_handler)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
 
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
